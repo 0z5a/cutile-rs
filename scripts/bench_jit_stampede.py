@@ -214,15 +214,9 @@ class Worker:
             line, self.stdout_buf = self.stdout_buf.split(b"\n", 1)
             text = line.decode("utf-8", "replace").strip()
             if text.startswith("STAMPEDE_READY "):
-                try:
-                    self.ready = json.loads(text[len("STAMPEDE_READY ") :])
-                except json.JSONDecodeError:
-                    self.stdout_extra.append(text)
+                self.ready = json.loads(text[len("STAMPEDE_READY ") :])
             elif text.startswith("STAMPEDE_RESULT "):
-                try:
-                    self.result_line = json.loads(text[len("STAMPEDE_RESULT ") :])
-                except json.JSONDecodeError:
-                    self.stdout_extra.append(text)
+                self.result_line = json.loads(text[len("STAMPEDE_RESULT ") :])
             elif text:
                 self.stdout_extra.append(text)
 
@@ -283,11 +277,8 @@ class Worker:
     def record(self) -> dict:
         """The worker's own JSON record, from the file it wrote (authoritative)."""
         if self.out_path and Path(self.out_path).is_file():
-            try:
-                with open(self.out_path) as fh:
-                    return json.load(fh)
-            except (json.JSONDecodeError, OSError):
-                pass
+            with open(self.out_path) as fh:
+                return json.load(fh)
         if self.result_line:
             return self.result_line
         rec = {"exit_status": "no_record", "correctness": "no_record", "rank": self.rank}
@@ -422,7 +413,7 @@ def cache_dir_for(round_dir: Path, mode: str, rank: int) -> Path:
 
 
 def run_tag(args) -> str:
-    return f"{args.tag}-" if getattr(args, "tag", "") else ""
+    return f"{args.tag}-" if args.tag else ""
 
 
 def run_round(
@@ -502,7 +493,10 @@ def spawn_group(args, env_info, gpus, mode, kernel, p, trial_index, phase, round
     group_spawn_wall_ns = time.time_ns()
     for rank in range(p):
         real_index = args.device_list[rank % len(args.device_list)]
-        gpu = gpus.get(real_index, {})
+        # A missing entry here would send an empty --expected-uuid, which makes
+        # the worker's UUID cross-check vacuously true. Fail instead: the device
+        # set was taken from nvidia-smi, so an absent index is a real fault.
+        gpu = gpus[real_index]
         cache_root = cache_dir_for(round_dir, mode, rank)
         env = dict(os.environ)
         env["CUDA_VISIBLE_DEVICES"] = str(real_index)
@@ -526,7 +520,7 @@ def spawn_group(args, env_info, gpus, mode, kernel, p, trial_index, phase, round
             "--worker-count", str(p),
             "--device", "0",  # CUDA_VISIBLE_DEVICES isolates one GPU, so it is logical 0
             "--device-index-real", str(real_index),
-            "--expected-uuid", gpu.get("uuid", ""),
+            "--expected-uuid", gpu["uuid"],
             "--out", str(out_path),
             "--timeout-ms", str(args.worker_timeout_ms),
         ]
