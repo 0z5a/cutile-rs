@@ -48,6 +48,13 @@ run_step \
 run_step \
     "cutile GPU aggregate tests" \
     cargo test -p cutile --test gpu
+    # Submission-lifetime tests at both completion mechanisms. The default
+    # 20 us budget lets short pipelines complete in the inline cuStreamQuery
+    # spin; 0 forces the reactor path, a large budget forces the spin path to
+    # resolve against the tests' blocking Gates. Under a Gate, `Pending` is the
+    # only correct first-poll outcome on either path.
+    CUDA_ASYNC_SPIN_BUDGET_US=0 cargo test -p cutile --test gpu submission_lifetimes
+    CUDA_ASYNC_SPIN_BUDGET_US=200000 cargo test -p cutile --test gpu submission_lifetimes
 
 run_step \
     "cuda-core GPU integration test vmm" \
