@@ -32,8 +32,14 @@ fn update_type_meta(
     inner_block_vars: &mut CompilerContext,
     outer_block_vars: &mut CompilerContext,
     outer2inner_vars: &HashMap<String, String>,
-    _field_name: String,
+    field_name: String,
 ) {
+    super::shared_utils::update_type_meta(
+        inner_block_vars,
+        outer_block_vars,
+        outer2inner_vars,
+        field_name,
+    );
     let outer_keys: Vec<String> = outer_block_vars.var_keys();
     for outer_key in &outer_keys {
         let Some(outer_val) = outer_block_vars.vars.get(outer_key) else {
@@ -43,9 +49,6 @@ fn update_type_meta(
             if let Some(inner_key) = outer2inner_vars.get(outer_key) {
                 if let Some(inner_val) = inner_block_vars.vars.get(inner_key) {
                     if inner_val.mutability == Mutability::Mutable {
-                        let mut new_val = outer_val.clone();
-                        new_val.type_meta = inner_val.type_meta.clone();
-                        outer_block_vars.vars.insert(outer_key.clone(), new_val);
                         // The callee advanced this resource's token; propagate it
                         // up the borrow link to the root tensor, so a later view
                         // of the same tensor is ordered after these writes. Here
@@ -117,17 +120,19 @@ impl<'m> CUDATileFunctionCompiler<'m> {
             // The callee body is compiled into the caller's current block, so
             // the caller's loop context governs check hoisting inside it.
             call_variables.loop_frames = ctx.loop_frames.clone();
-            // ... and the caller's guard nesting governs whether an obligation
-            // inside the callee may become an unconditional launch check. An
-            // access behind a runtime guard in the caller is behind that guard
-            // after inlining too (issue #215, D1): dropping the count here made
-            // every inlined `Partition::load`/`store` look unconditional, which
-            // is how a guarded access kept staking a launch check.
             call_variables.condition_depth = ctx.condition_depth;
+            call_variables.token_update_in_region =
+                ctx.token_update_in_region || ctx.inside_for || ctx.innermost_loop.is_some();
             call_variables.module_scope.push(module_name.clone());
             // The callee's body block is a function body: a top-level `return`
             // there yields the call's value.
             call_variables.fn_body = true;
+            // The ABI wrapper's final call is the kernel body, not a helper.
+            call_variables.kernel_entry = ctx.kernel_entry
+                && module_name == &self.module_name
+                && crate::kernel_naming::KernelNaming::canonical_public_name(
+                    &fn_item.sig.ident.to_string(),
+                ) == self._function_name;
             let mut outer2inner_map = HashMap::new();
             let sig_param_mutability = get_sig_param_mutability(&fn_item.sig);
 
@@ -144,6 +149,14 @@ impl<'m> CUDATileFunctionCompiler<'m> {
                 };
                 call_variables.vars.insert(param_name.clone(), param_val);
                 if let Some(call_arg_name) = get_ident_from_expr(&call_expr.args[i]) {
+                    if ctx
+                        .function_level_bindings
+                        .contains(&call_arg_name.to_string())
+                    {
+                        call_variables
+                            .function_level_bindings
+                            .insert(param_name.clone());
+                    }
                     outer2inner_map.insert(call_arg_name.to_string(), param_name.clone());
                 };
             }
@@ -352,13 +365,9 @@ impl<'m> CUDATileFunctionCompiler<'m> {
             // The callee body is compiled into the caller's current block, so
             // the caller's loop context governs check hoisting inside it.
             call_variables.loop_frames = ctx.loop_frames.clone();
-            // ... and the caller's guard nesting governs whether an obligation
-            // inside the callee may become an unconditional launch check. Every
-            // partition access reaches its check through an inlined method
-            // (`Partition::load`/`store`, `check_partition_access`), so losing
-            // the count here silently un-guarded every conditional access in
-            // the language (issue #215, D1).
             call_variables.condition_depth = ctx.condition_depth;
+            call_variables.token_update_in_region =
+                ctx.token_update_in_region || ctx.inside_for || ctx.innermost_loop.is_some();
             call_variables.module_scope.push(module_name.clone());
             call_variables.fn_body = true;
             let mut outer2inner_map = HashMap::new();
@@ -377,6 +386,14 @@ impl<'m> CUDATileFunctionCompiler<'m> {
                 call_variables.vars.insert(param_name.clone(), param_val);
                 // Including self here.
                 if let Some(call_arg_name) = get_ident_from_expr(&args[i]) {
+                    if ctx
+                        .function_level_bindings
+                        .contains(&call_arg_name.to_string())
+                    {
+                        call_variables
+                            .function_level_bindings
+                            .insert(param_name.clone());
+                    }
                     outer2inner_map.insert(call_arg_name.to_string(), param_name.clone());
                 };
             }
